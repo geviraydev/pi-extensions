@@ -1,23 +1,31 @@
 # pi-extensions
 
-Personal [pi](https://pi.dev) extensions. The repository root is the global
-extensions directory itself (`~/.pi/agent/extensions/`), so cloning this repo
-into that path is all pi needs to pick everything up. No `pi install`, no
-settings entries, no symlinks.
+Personal collection of [pi](https://pi.dev) extensions.
 
 | Extension | What it does |
 | --- | --- |
 | [`usage/`](./usage) | `/usage`: provider subscription quota plus a local per-key, per-model breakdown. Currently implements the opencode-go (OpenCode Zen) provider. |
 
-Pi installs third-party packages under `~/.pi/agent/npm/` and
-`~/.pi/agent/git/`, so this directory stays personal.
+Each extension is a directory with an `index.ts` entry point, which is also the
+layout pi auto-discovers in `~/.pi/agent/extensions/*/index.ts`.
 
-## Install on a new machine
+## Use an extension
+
+Symlink the extension into pi's global extensions directory:
 
 ```
-git clone git@github.com:geviraydev/pi-extensions.git ~/.pi/agent/extensions
+ln -s "$(pwd)/usage" ~/.pi/agent/extensions/usage
 ```
 
-If the directory already exists and is not empty, clone elsewhere and copy the
-extension directories into it instead. Then run `/reload` inside pi or start a
-new session.
+Then run `/reload` inside pi, or start a new session. Cloning this repository
+directly into `~/.pi/agent/extensions` also works, as does pointing pi at the
+extension path from the `extensions` array in `~/.pi/agent/settings.json`.
+
+## Development
+
+Edit the files in this repository and run `/reload` in pi; the symlinked copy
+picks up the changes without any install step.
+
+## License
+
+MIT, see [LICENSE](./LICENSE).
