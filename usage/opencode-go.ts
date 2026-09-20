@@ -38,12 +38,6 @@ export type WindowKey = "rolling" | "weekly" | "monthly";
 
 export const WINDOW_KEYS: readonly WindowKey[] = ["rolling", "weekly", "monthly"];
 
-export const WINDOW_LABELS: Record<WindowKey, string> = {
-	rolling: "5h",
-	weekly: "7d",
-	monthly: "30d",
-};
-
 export const WINDOW_TITLES: Record<WindowKey, string> = {
 	rolling: "last 5h",
 	weekly: "last 7d",
@@ -64,13 +58,23 @@ export function getCachedSnapshot(): UsageSnapshot | undefined {
 	return snapshot;
 }
 
-export function getMinRefreshGapMs(): number {
-	return MIN_REFRESH_GAP_MS;
+/** Combine the request timeout with an optional caller abort signal. */
+function requestSignal(signal?: AbortSignal): AbortSignal {
+	const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+	if (!signal) return timeout;
+
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	if (signal.aborted) abort();
+	else signal.addEventListener("abort", abort, { once: true });
+	timeout.addEventListener("abort", abort, { once: true });
+	return controller.signal;
 }
 
 export async function fetchUsage(
 	ctx: ExtensionContext,
 	force = false,
+	signal?: AbortSignal,
 ): Promise<UsageSnapshot | undefined> {
 	if (inflight) return inflight;
 	if (!force && snapshot && Date.now() - lastFetchedAt < MIN_REFRESH_GAP_MS) {
@@ -84,12 +88,17 @@ export async function fetchUsage(
 			if (!apiKey) return undefined;
 
 			const baseUrl = (auth?.auth?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+			const headers = new Headers();
+			for (const [name, value] of Object.entries(auth?.auth?.headers ?? {})) {
+				if (typeof value === "string") headers.set(name, value);
+			}
+			// Respect a provider-supplied Authorization; only add the bearer token
+			// when the provider headers do not already carry one.
+			if (!headers.has("authorization")) headers.set("Authorization", `Bearer ${apiKey}`);
+
 			const response = await fetch(`${baseUrl}/usage`, {
-				headers: {
-					...(auth?.auth?.headers ?? {}),
-					Authorization: `Bearer ${apiKey}`,
-				},
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+				headers,
+				signal: requestSignal(signal),
 			});
 			if (!response.ok) {
 				throw new Error(`usage endpoint returned HTTP ${response.status}`);

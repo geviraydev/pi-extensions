@@ -9,6 +9,15 @@ Personal collection of [pi](https://pi.dev) extensions.
 Each extension is a directory with an `index.ts` entry point, which is also the
 layout pi auto-discovers in `~/.pi/agent/extensions/*/index.ts`.
 
+## Scope
+
+Personal collection, public mainly so it is easy to share with my team. These
+are minimal extensions built for a specific need, not attempts to be complete
+provider packages. Where a mature alternative exists, the extension README
+points at it; for example, `usage/` here covers opencode-go only, while the
+[pi package gallery](https://pi.dev/packages) lists broader usage extensions
+for many providers.
+
 ## Use an extension
 
 Symlink the extension into pi's global extensions directory:

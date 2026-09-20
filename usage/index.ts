@@ -34,6 +34,8 @@ const REFRESH_INTERVAL_MS = 120_000;
 
 type Theme = ExtensionContext["ui"]["theme"];
 
+type UsageTotals = Pick<WindowUsage, "cost" | "tokens">;
+
 type ReportWindow = {
 	key: string;
 	label: string;
@@ -46,6 +48,8 @@ type ReportWindow = {
 	models: ModelUsage[];
 	/** Local usage with no key recorded (predates key tracking). */
 	unattributed?: WindowUsage;
+	/** Local usage attributed to other credentials. */
+	otherKeys?: { requests: number; tokens: number; cost: number };
 };
 
 type UsageReport = {
@@ -61,8 +65,12 @@ type UsageReport = {
 // Report building
 // ---------------------------------------------------------------------------
 
-async function buildReport(ctx: ExtensionContext, force: boolean): Promise<UsageReport | undefined> {
-	const snapshot = await fetchUsage(ctx, force);
+async function buildReport(
+	ctx: ExtensionContext,
+	force: boolean,
+	signal?: AbortSignal,
+): Promise<UsageReport | undefined> {
+	const snapshot = await fetchUsage(ctx, force, signal);
 	if (!snapshot) return undefined;
 
 	const fingerprint = await currentKeyFingerprint(ctx);
@@ -77,15 +85,19 @@ async function buildReport(ctx: ExtensionContext, force: boolean): Promise<Usage
 	}
 
 	// Usage attributed to the active key is the primary list. Requests recorded
-	// before key tracking existed carry no key and are reported separately;
-	// requests attributed to other keys are not this key's usage.
+	// before key tracking existed carry no key; requests attributed to other
+	// credentials are counted separately so nothing is silently dropped.
 	const scoped = fingerprint ? events.filter((event) => event.key === fingerprint) : [];
 	const unattributed = events.filter((event) => event.key === undefined);
+	const otherKeyEvents = events.filter(
+		(event) => event.key !== undefined && event.key !== fingerprint,
+	);
 	const labels = await readLabels();
 
 	const windows: ReportWindow[] = ranges.map((range) => {
 		const usage: WindowUsage = aggregate(scoped, range.start, range.end);
 		const orphaned: WindowUsage = aggregate(unattributed, range.start, range.end);
+		const other: WindowUsage = aggregate(otherKeyEvents, range.start, range.end);
 		const window = snapshot[range.key];
 		return {
 			key: range.key,
@@ -98,6 +110,10 @@ async function buildReport(ctx: ExtensionContext, force: boolean): Promise<Usage
 			total: { requests: usage.requests, tokens: usage.tokens, cost: usage.cost },
 			models: usage.models,
 			unattributed: orphaned.requests > 0 ? orphaned : undefined,
+			otherKeys:
+				other.requests > 0
+					? { requests: other.requests, tokens: other.tokens, cost: other.cost }
+					: undefined,
 		};
 	});
 
@@ -119,8 +135,10 @@ type Segment = { text: string; color?: Color; bold?: boolean };
 type Line = Segment[];
 
 function formatTokens(value: number): string {
-	if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
-	if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+	// Thresholds sit just below the unit boundary so a value never rounds up
+	// into "1000k" or "1000.0M".
+	if (value >= 999_950_000) return `${(value / 1e9).toFixed(1)}B`;
+	if (value >= 999_500) return `${(value / 1e6).toFixed(1)}M`;
 	if (value >= 1e3) return `${(value / 1e3).toFixed(0)}k`;
 	return String(Math.round(value));
 }
@@ -182,7 +200,7 @@ function quotaLine(label: string, window: UsageWindow | undefined): Line {
 	];
 }
 
-function shareText(model: ModelUsage, total: WindowUsage): string {
+function shareText(model: ModelUsage, total: UsageTotals): string {
 	if (total.cost > 0) {
 		if (!model.costKnown) return "?";
 		return `${Math.round((model.cost / total.cost) * 100)}%`;
@@ -191,7 +209,7 @@ function shareText(model: ModelUsage, total: WindowUsage): string {
 	return "—";
 }
 
-function modelRows(models: ModelUsage[], total: WindowUsage, maxModels: number, dimmed: boolean): Line[] {
+function modelRows(models: ModelUsage[], total: UsageTotals, maxModels: number, dimmed: boolean): Line[] {
 	const rows: Line[] = [];
 	const shown = models.slice(0, maxModels);
 	if (shown.length === 0) return rows;
@@ -234,9 +252,7 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 	for (const window of report.windows) {
 		// Requests that produced no tokens and no cost (aborted calls) are noise
 		// in the model list.
-		const models = window.models
-			.filter((model) => model.tokens > 0 || model.cost > 0)
-			.slice(0, maxModels);
+		const models = window.models.filter((model) => model.tokens > 0 || model.cost > 0);
 		const quota =
 			typeof window.percent === "number" ? `${Math.round(window.percent)}% of limit` : "no quota data";
 		const state = window.status && window.status !== "ok" ? ` [${window.status}]` : "";
@@ -267,9 +283,20 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 			const orphanModels = orphan.models.filter((model) => model.tokens > 0 || model.cost > 0);
 			lines.push(...modelRows(orphanModels, orphan, Math.min(maxModels, 4), true));
 		}
+
+		if (window.otherKeys) {
+			const other = window.otherKeys;
+			lines.push([
+				{
+					text: `  other keys: ${other.requests.toLocaleString()} req · ${formatTokens(other.tokens)} tok · ${formatMoney(other.cost)}`,
+					color: "dim",
+				},
+			]);
+		}
 	}
 
 	const hasUnattributed = report.windows.some((window) => window.unattributed);
+	const hasOtherKeys = report.windows.some((window) => window.otherKeys);
 
 	lines.push([]);
 	lines.push([
@@ -277,6 +304,9 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 	]);
 	if (hasUnattributed) {
 		lines.push([{ text: "unattributed rows were recorded before key tracking", color: "dim" }]);
+	}
+	if (hasOtherKeys) {
+		lines.push([{ text: "other keys are requests under a different credential", color: "dim" }]);
 	}
 
 	return lines;
@@ -388,7 +418,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				const report = await buildReport(ctx, true);
+				const report = await buildReport(ctx, true, ctx.signal);
 				if (!report) {
 					ctx.ui.notify("No opencode-go credentials found. Run /login to add them.", "warning");
 					return;
@@ -413,8 +443,8 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Check the current opencode-go subscription quota (rolling 5-hour, weekly, and monthly windows with percentages and reset times) plus a per-model breakdown of locally tracked usage for each window. The breakdown covers the active API key on this machine only; usage from other machines is not included, and older local usage recorded before key tracking appears as a separate unattributed block. Use when the user asks how much of their opencode-go plan has been used, which models consumed it, or whether they are close to a limit.",
 		parameters: Type.Object({}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const report = await buildReport(ctx, true);
+		async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+			const report = await buildReport(ctx, true, signal);
 			if (!report) {
 				return {
 					content: [{ type: "text", text: "No opencode-go credentials are configured." }],
@@ -471,7 +501,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => {
 		void refreshStatus(ctx);
 	});
 

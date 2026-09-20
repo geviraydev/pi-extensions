@@ -16,7 +16,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { keyFingerprint } from "./keys.ts";
+import { KEY_ENTRY, keyFingerprint } from "./keys.ts";
 
 const PI_SESSIONS_DIR = join(getAgentDir(), "sessions");
 const OPENCODE_DIR = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode");
@@ -74,6 +74,12 @@ type CacheEntry = {
 const fileCache = new Map<string, CacheEntry>();
 const rateTable = new Map<string, Rate>();
 
+/**
+ * Marker for rows that belong to a different (or earlier) credential. They are
+ * excluded from the active key's breakdown and reported as "other keys".
+ */
+const OTHER_KEY = "other";
+
 function num(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -130,10 +136,12 @@ function parsePiContent(content: string): UsageEvent[] {
 	let currentKey: string | undefined;
 
 	for (const line of content.split("\n")) {
-		if (line.includes('"customType":"opencode-go-key"')) {
+		if (line.includes(`"customType":"${KEY_ENTRY}"`)) {
 			try {
-				const entry = JSON.parse(line) as { data?: { fp?: unknown } };
-				if (typeof entry.data?.fp === "string") currentKey = entry.data.fp;
+				const entry = JSON.parse(line) as { type?: string; customType?: string; data?: { fp?: unknown } };
+				if (entry.type === "custom" && entry.customType === KEY_ENTRY && typeof entry.data?.fp === "string") {
+					currentKey = entry.data.fp;
+				}
 			} catch {
 				// ignore malformed entry
 			}
@@ -297,6 +305,12 @@ async function collectOpencodeEvents(sinceMs: number): Promise<UsageEvent[]> {
 
 	const events: UsageEvent[] = [];
 	const opencodeKey = await readOpencodeKeyFingerprint();
+	// The client stores no key history. Rows older than the last modification
+	// of its auth file cannot have been made with the current key, so they are
+	// marked as other instead of being attributed to it.
+	const authMtimeMs = await stat(OPENCODE_AUTH)
+		.then((info) => info.mtimeMs)
+		.catch(() => 0);
 	try {
 		const rows = db.prepare("SELECT data FROM message WHERE time_created >= ?").all(sinceMs);
 		for (const row of rows) {
@@ -328,7 +342,18 @@ async function collectOpencodeEvents(sinceMs: number): Promise<UsageEvent[]> {
 				costKnown = estimate.known;
 			}
 
-			events.push({ ts, model, input, output, cacheRead, cacheWrite, cost, costKnown, source: "opencode", key: opencodeKey });
+			events.push({
+				ts,
+				model,
+				input,
+				output,
+				cacheRead,
+				cacheWrite,
+				cost,
+				costKnown,
+				source: "opencode",
+				key: !opencodeKey ? undefined : ts >= authMtimeMs ? opencodeKey : OTHER_KEY,
+			});
 		}
 	} catch {
 		// ignore: database may be locked or have an unexpected schema
@@ -348,6 +373,8 @@ async function collectOpencodeEvents(sinceMs: number): Promise<UsageEvent[]> {
 // ---------------------------------------------------------------------------
 
 export async function collectEvents(sinceMs: number): Promise<UsageEvent[]> {
+	// Sequential on purpose: parsing pi sessions teaches the per-token rates
+	// used to estimate cost for OpenCode client rows, which carry no cost.
 	const events = await collectPiEvents(sinceMs);
 	events.push(...(await collectOpencodeEvents(sinceMs)));
 	events.sort((a, b) => a.ts - b.ts);
