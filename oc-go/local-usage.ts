@@ -8,8 +8,8 @@
  * - the OpenCode client database in `~/.local/share/opencode/opencode.db`
  *   (tokens; cost is estimated from the rates learned from pi sessions)
  *
- * Parsed pi files are cached by path + mtime + size, so repeated `/usage`
- * calls only re-read files that changed.
+ * Parsed pi files are cached by path + mtime + size, so repeated report builds
+ * only re-read files that changed.
  */
 
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -23,7 +23,7 @@ const OPENCODE_DIR = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local",
 const OPENCODE_DB = join(OPENCODE_DIR, "opencode.db");
 const OPENCODE_AUTH = join(OPENCODE_DIR, "auth.json");
 const PROVIDER = "opencode-go";
-const MTIME_MARGIN_MS = 12 * 3600_000;
+const MTIME_MARGIN_MS = 3600_000;
 
 export type UsageEvent = {
 	ts: number;
@@ -76,7 +76,8 @@ const rateTable = new Map<string, Rate>();
 
 /**
  * Marker for rows that belong to a different (or earlier) credential. They are
- * excluded from the active key's breakdown and reported as "other keys".
+ * excluded from the active key's breakdown and reported as unattributed unless
+ * the fingerprint is stored or labeled.
  */
 const OTHER_KEY = "other";
 

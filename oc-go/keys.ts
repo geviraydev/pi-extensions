@@ -6,7 +6,7 @@
  * is stored in session entries (`opencode-go-key`) so local usage can be
  * attributed to a key without persisting the secret itself.
  *
- * Run `/usage label <name>` to name the key that is currently active; labels
+ * Run `/oc-go label <name>` to name the key that is currently active; labels
  * are kept in `opencode-go-usage-labels.json` inside the pi agent directory.
  */
 
@@ -26,24 +26,10 @@ export function keyFingerprint(key: string): string {
 }
 
 export async function currentKeyFingerprint(ctx: ExtensionContext): Promise<string | undefined> {
-	try {
-		const auth = await ctx.modelRegistry.getProviderAuth(PROVIDER);
-		const key = auth?.auth?.apiKey;
-		return key ? keyFingerprint(key) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export function fingerprintFromEntries(entries: readonly unknown[]): string | undefined {
-	let fingerprint: string | undefined;
-	for (const raw of entries) {
-		const entry = raw as { type?: string; customType?: string; data?: { fp?: unknown } };
-		if (entry?.type === "custom" && entry.customType === KEY_ENTRY && typeof entry.data?.fp === "string") {
-			fingerprint = entry.data.fp;
-		}
-	}
-	return fingerprint;
+	// getApiKeyForProvider resolves the effective credential and returns
+	// undefined when none is configured or resolution fails.
+	const key = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER);
+	return key ? keyFingerprint(key) : undefined;
 }
 
 export async function readLabels(): Promise<Record<string, string>> {
