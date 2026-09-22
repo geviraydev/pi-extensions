@@ -8,8 +8,9 @@
  *   switching logs in through pi's credential store.
  * - `opencode_usage` tool: lets the model check quota and breakdown when asked.
  *
- * Quota comes from `<baseUrl>/usage` and is already scoped to the active API
- * key. The per-model breakdown is local-only and is attributed to keys using
+ * Quota comes from `<baseUrl>/usage` and is scoped to the workspace of the
+ * active API key, so keys from the same workspace report the same windows.
+ * The per-model breakdown is local-only and is attributed to keys using
  * session entries, so switching keys does not mix usage.
  */
 
@@ -356,6 +357,14 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 	lines.push(quotaLine("weekly", report.snapshot.weekly));
 	lines.push(quotaLine("monthly", report.snapshot.monthly));
 
+	lines.push([]);
+	lines.push([
+		{ text: "quota % is server-side and includes other machines", color: "dim" },
+	]);
+	lines.push([
+		{ text: "model % is each group's share of locally tracked usage (this machine)", color: "dim" },
+	]);
+
 	for (const window of report.windows) {
 		// Requests that produced no tokens and no cost (aborted calls) are noise
 		// in the model list.
@@ -368,7 +377,7 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 		lines.push([
 			{ text: window.label, color: "accent", bold: true },
 			{ text: `  ${quota}${state}`, color: percentColor(window.percent, window.status) },
-			{ text: ` · active key: ${window.total.requests.toLocaleString()} req · ${formatTokens(window.total.tokens)} tok · ${formatMoney(window.total.cost)} tracked`, color: "dim" },
+			{ text: ` · active key (local): ${window.total.requests.toLocaleString()} req · ${formatTokens(window.total.tokens)} tok · ${formatMoney(window.total.cost)} tracked`, color: "dim" },
 		]);
 
 		if (models.length > 0) {
@@ -407,10 +416,9 @@ function buildReportLines(report: UsageReport, maxModels: number): Line[] {
 	const hasUnattributed = report.windows.some((window) => window.unattributed);
 	const hasKeyRows = report.windows.some((window) => window.keyRows);
 
-	lines.push([]);
-	lines.push([
-		{ text: "shares of locally tracked usage · other machines not included", color: "dim" },
-	]);
+	if (hasUnattributed || hasKeyRows) {
+		lines.push([]);
+	}
 	if (hasUnattributed) {
 		lines.push([
 			{ text: "unattributed rows have no recorded key or match no stored/labeled key", color: "dim" },
